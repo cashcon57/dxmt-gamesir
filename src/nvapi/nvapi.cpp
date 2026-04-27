@@ -18,9 +18,31 @@ Logger Logger::s_instance("nvapi.log");
 
 static std::atomic_uint32_t s_initialization_count = 0;
 
+namespace {
+// Lazy-resolve DXMT's custom DXGIGetDebugInterface1 from dxgi.dll at runtime.
+// Avoids a static import on dxgi.dll: if the bottle's dxgi.dll is missing,
+// corrupt, or wrong-arch, this DLL would otherwise fail to load with
+// STATUS_INVALID_IMAGE_NOT_MZ at process startup, blocking nvapi64 entirely.
+// With lazy resolution, nvapi64 always loads and reports
+// NVAPI_NVIDIA_DEVICE_NOT_FOUND when DXMT's NV ext is unavailable, matching
+// real NVIDIA driver behavior on systems without an NV GPU.
+using PFN_DXGIGetDebugInterface1 = HRESULT(WINAPI *)(UINT, REFIID, void **);
+
+bool DxmtNvExtAvailable() {
+  HMODULE dxgi = GetModuleHandleA("dxgi.dll");
+  if (!dxgi)
+    return false;
+  auto pfn = reinterpret_cast<PFN_DXGIGetDebugInterface1>(
+      GetProcAddress(dxgi, "DXGIGetDebugInterface1"));
+  if (!pfn)
+    return false;
+  return SUCCEEDED(pfn(0, DXMT_NVEXT_GUID, nullptr));
+}
+} // namespace
+
 NVAPI_INTERFACE
 NvAPI_Initialize() {
-  if (FAILED(DXGIGetDebugInterface1(0, DXMT_NVEXT_GUID, nullptr))) {
+  if (!DxmtNvExtAvailable()) {
     return NVAPI_NVIDIA_DEVICE_NOT_FOUND;
   }
   s_initialization_count++;
